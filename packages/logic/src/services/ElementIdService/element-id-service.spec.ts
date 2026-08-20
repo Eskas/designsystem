@@ -47,4 +47,23 @@ describe("generateElementId", () => {
 
         ElementIdService.reset();
     });
+
+    it("should not consider ids used inside a shadow root as taken (never reaches across a shadow boundary)", () => {
+        expect.assertions(1);
+        ElementIdService.reset();
+        document.body.replaceChildren();
+        const host = document.createElement("div");
+        document.body.append(host);
+        const shadowRoot = host.attachShadow({ mode: "open" });
+        shadowRoot.innerHTML = /* HTML */ `
+            <div id="fkui-vue-element-0001"></div>
+        `;
+
+        const generatedId = ElementIdService.generateElementId();
+
+        expect(generatedId).toBe("fkui-vue-element-0001");
+
+        document.body.replaceChildren();
+        ElementIdService.reset();
+    });
 });

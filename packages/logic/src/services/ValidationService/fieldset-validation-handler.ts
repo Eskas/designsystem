@@ -97,14 +97,22 @@ class FieldsetValidationHandler {
     }
 
     private validateFieldsetAndChildren(): void {
-        const validatableElements = document.querySelectorAll(
+        /* Query within the element's own root (the document, or the shadow
+         * root it lives in) rather than always the document, so this also
+         * works when the fieldset is rendered inside a web component. */
+        const root = this.element.getRootNode() as ParentNode;
+        const validatableElements = root.querySelectorAll(
             `fieldset#${this.element.id}, #${this.element.id} input[type='checkbox'], #${this.element.id} input[type='radio']`,
         );
 
         for (const element of validatableElements) {
             if (element.id) {
+                /* Pass the element itself rather than its id: we already
+                 * hold the reference, and an id-string lookup would have to
+                 * search back through the DOM (and potentially shadow
+                 * roots) for no reason. */
                 /* eslint-disable-next-line @typescript-eslint/no-floating-promises -- technical debt */
-                this.validationService.validateElement(element.id);
+                this.validationService.validateElement(element);
             }
         }
     }

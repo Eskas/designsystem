@@ -216,7 +216,10 @@ export interface ValidationServiceInterface {
      * @public
      * @deprecated Use {@link ValidationServiceInterface.validateElement} instead.
      * @param src - Element instance or id.
-     * @param root - Element (or document) to query when looking up elements by id.
+     * @param root - Element (or document) to query when looking up elements
+     * by id. When looking up an id from inside a web component, pass the
+     * component's own shadow root (or an element inside it) - ids are not
+     * guaranteed unique outside of it.
      * @returns Resolves to `true` if all given elements (or descendants) are valid. Empty array resolves to `true`.
      */
     isValid(

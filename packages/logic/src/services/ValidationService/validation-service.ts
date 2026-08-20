@@ -56,11 +56,14 @@ interface AllValidatorsResult {
 }
 
 class ValidationServiceImpl implements ValidationServiceInterface {
-    private validationStates: Record<string, ValidationState> = {};
-    private elementValidatorsReferences: Record<
-        string,
+    private validationStates = new Map<
+        ValidatableHTMLElement,
+        ValidationState
+    >();
+    private elementValidatorsReferences = new Map<
+        ValidatableHTMLElement,
         ElementValidatorsReference
-    > = {};
+    >();
 
     public validationErrorMessages: Record<ValidatorName, string | undefined> =
         {};
@@ -73,11 +76,15 @@ class ValidationServiceImpl implements ValidationServiceInterface {
         string,
         ElementValidatorsReference
     > {
-        return this.elementValidatorsReferences;
+        const result: Record<string, ElementValidatorsReference> = {};
+        for (const [element, reference] of this.elementValidatorsReferences) {
+            result[element.id] = reference;
+        }
+        return result;
     }
 
     public get isAnyTouched(): boolean {
-        return Object.values(this.validationStates).some(
+        return Array.from(this.validationStates.values()).some(
             (item) => item.touched === true,
         );
     }
@@ -111,16 +118,6 @@ class ValidationServiceImpl implements ValidationServiceInterface {
         registry[name] = validator;
     }
 
-    private hasExistingReference(
-        elementValidatorsReference: ElementValidatorsReference,
-        element: ValidatableHTMLElement,
-    ): boolean {
-        return (
-            isSet(elementValidatorsReference) &&
-            elementValidatorsReference.element === element
-        );
-    }
-
     private shouldApplyNewConfigOnBaseConfig(
         isBaseConfigs: boolean,
         elementValidatorsReference: ElementValidatorsReference,
@@ -137,37 +134,32 @@ class ValidationServiceImpl implements ValidationServiceInterface {
         isBaseConfigs: boolean,
     ): ValidatorConfigs {
         const elementValidatorsReference =
-            this.elementValidatorsReferences[element.id];
-        const hasExistingReference = this.hasExistingReference(
-            elementValidatorsReference,
-            element,
-        );
+            this.elementValidatorsReferences.get(element);
 
-        let validatorConfigs;
-
-        if (!hasExistingReference) {
-            validatorConfigs = newValidatorConfigs;
-        } else if (
+        if (!elementValidatorsReference) {
+            return newValidatorConfigs;
+        }
+        if (
             this.shouldApplyNewConfigOnBaseConfig(
                 isBaseConfigs,
                 elementValidatorsReference,
             )
         ) {
-            validatorConfigs = this.mergeValidatorConfigs(
+            return this.mergeValidatorConfigs(
                 elementValidatorsReference.baseValidatorConfigs,
                 newValidatorConfigs,
             );
-        } else if (isBaseConfigs) {
-            validatorConfigs = this.mergeValidatorConfigs(
+        }
+        if (isBaseConfigs) {
+            const validatorConfigs = this.mergeValidatorConfigs(
                 newValidatorConfigs,
                 elementValidatorsReference.validatorConfigs,
             );
             elementValidatorsReference.baseValidatorConfigs =
                 newValidatorConfigs;
-        } else {
-            validatorConfigs = newValidatorConfigs;
+            return validatorConfigs;
         }
-        return validatorConfigs;
+        return newValidatorConfigs;
     }
 
     private dispatchValidationConfig(
@@ -185,8 +177,7 @@ class ValidationServiceImpl implements ValidationServiceInterface {
     }
 
     public removeValidatorsFromElement(element: ValidatableHTMLElement): void {
-        // eslint-disable-next-line @typescript-eslint/no-dynamic-delete -- Technical debt, a map would have been better.
-        delete this.elementValidatorsReferences[element.id];
+        this.elementValidatorsReferences.delete(element);
     }
 
     public addValidatorsToElement(
@@ -221,15 +212,14 @@ class ValidationServiceImpl implements ValidationServiceInterface {
             foundValidators,
             validatorConfigs,
         );
-        let elementValidatorsReference =
-            this.elementValidatorsReferences[element.id];
+        const existingReference = this.elementValidatorsReferences.get(element);
 
-        if (this.hasExistingReference(elementValidatorsReference, element)) {
-            elementValidatorsReference.validatorConfigs = validatorConfigs;
-            elementValidatorsReference.validators = foundValidators;
-            elementValidatorsReference.instant = useInstantValidation;
+        if (existingReference) {
+            existingReference.validatorConfigs = validatorConfigs;
+            existingReference.validators = foundValidators;
+            existingReference.instant = useInstantValidation;
         } else {
-            elementValidatorsReference = {
+            const elementValidatorsReference: ElementValidatorsReference = {
                 validators: foundValidators,
                 validatorConfigs,
                 element,
@@ -239,8 +229,10 @@ class ValidationServiceImpl implements ValidationServiceInterface {
                     : undefined,
             };
 
-            this.elementValidatorsReferences[element.id] =
-                elementValidatorsReference;
+            this.elementValidatorsReferences.set(
+                element,
+                elementValidatorsReference,
+            );
             this.createEventListeners(elementValidatorsReference);
         }
     }
@@ -373,7 +365,7 @@ class ValidationServiceImpl implements ValidationServiceInterface {
             throw new Error(`Element "${ref}" is not a validatable element`);
         }
 
-        const element: HTMLElement = src;
+        const element: ValidatableHTMLElement = src;
 
         /* Handle when element has no registered validators (and thus no event
          * listeners) by assuming the element is valid */
@@ -397,13 +389,18 @@ class ValidationServiceImpl implements ValidationServiceInterface {
             /* Add a temporary listener, as long as IE11 is supported we cannot
              * use "once" so instead we save the listener and remove it manually
              * later. */
+            /* `element` is a union of several HTMLElement subtypes, which
+             * makes TS fall back to the generic EventListener overload of
+             * add/removeEventListener instead of the "validity"-specific one
+             * declared in HTMLElementEventMap - cast at the call sites below
+             * rather than widening the listener's own signature. */
             const once = (event: CustomEvent<ValidityEvent>): void => {
-                element.removeEventListener("validity", once);
+                element.removeEventListener("validity", once as EventListener);
                 clearTimeout(watchdog);
                 const {
                     touched: isTouched = false,
                     submitted: isSubmitted = false,
-                } = this.getState(element.id);
+                } = this.getState(element) ?? {};
                 const { isValid, validationMessage } = event.detail;
                 resolve({
                     isValid,
@@ -412,14 +409,14 @@ class ValidationServiceImpl implements ValidationServiceInterface {
                     error: isValid ? null : validationMessage,
                 });
             };
-            element.addEventListener("validity", once);
+            element.addEventListener("validity", once as EventListener);
 
             /* Add a watchdog timer in case the listener isn't actually there or
              * if the event is blocked with {@link stopPropagation} or similar. */
             const watchdog = setTimeout(() => {
                 const tagName = element.tagName.toLowerCase();
                 const ref = `${tagName}#${element.id}`;
-                element.removeEventListener("validity", once);
+                element.removeEventListener("validity", once as EventListener);
                 /* eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- technical debt */
                 reject(
                     `Element "${ref}" did not respond with validity event after 500ms`,
@@ -462,16 +459,15 @@ class ValidationServiceImpl implements ValidationServiceInterface {
                 this.setState(childElement, validationState);
             }
         } else {
-            const existingState = this.validationStates[element.id];
+            const existingState = this.validationStates.get(element);
 
-            /* eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- technical debt */
             if (existingState) {
-                this.validationStates[element.id] = {
+                this.validationStates.set(element, {
                     ...existingState,
                     ...validationState,
-                };
+                });
             } else {
-                this.validationStates[element.id] = validationState;
+                this.validationStates.set(element, validationState);
             }
         }
     }
@@ -555,16 +551,17 @@ class ValidationServiceImpl implements ValidationServiceInterface {
         });
     }
 
-    private getState(id: string): ValidationState {
-        return this.validationStates[id];
+    private getState(
+        element: ValidatableHTMLElement,
+    ): ValidationState | undefined {
+        return this.validationStates.get(element);
     }
 
     private getExistingStateOrSetDefault(
         element: ValidatableHTMLElement,
     ): ValidationState {
-        let validationState = this.getState(element.id);
+        let validationState = this.getState(element);
 
-        /* eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- technical debt */
         if (!validationState) {
             validationState = { touched: false, submitted: false };
             /* eslint-disable-next-line @typescript-eslint/no-deprecated -- internal usage */
@@ -823,7 +820,7 @@ class ValidationServiceImpl implements ValidationServiceInterface {
     }
 
     public clearAllStates(): void {
-        this.validationStates = {};
+        this.validationStates = new Map();
     }
 }
 

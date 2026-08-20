@@ -145,7 +145,7 @@ afterEach(() => {
     /* eslint-disable-next-line @typescript-eslint/no-explicit-any -- technical
      * debt, should not access private variables, rather expose an @internal
      * method to clear up the states */
-    (ValidationService as any).validationStates = {};
+    (ValidationService as any).validationStates = new Map();
     vi.resetAllMocks();
     vi.restoreAllMocks();
 });
@@ -173,12 +173,19 @@ describe("setState", () => {
             touched: true,
         });
 
-        expect(
-            /* eslint-disable-next-line @typescript-eslint/no-explicit-any --
-             * technical debt, should not access private variables, rather
-             * expose an @internal method to fetch the states */
-            (ValidationService as any).validationStates,
-        ).toEqual({
+        /* eslint-disable-next-line @typescript-eslint/no-explicit-any --
+         * technical debt, should not access private variables, rather
+         * expose an @internal method to fetch the states */
+        const states = (ValidationService as any).validationStates as Map<
+            Element,
+            unknown
+        >;
+        const statesById: Record<string, unknown> = {};
+        for (const [element, state] of states) {
+            statesById[element.id] = state;
+        }
+
+        expect(statesById).toEqual({
             "input-element": { touched: true },
             "select-element": { touched: true },
             "textarea-element": { touched: true },
@@ -1521,4 +1528,61 @@ ValidationService.registerValidator({
     ): boolean {
         return value === config.something;
     },
+});
+
+describe("elements with colliding ids across a shadow boundary", () => {
+    /* Simulates two independent instances of the same web component (e.g.
+     * two module-federation remotes), each rendering a field with the same
+     * auto-generated id inside its own shadow root. */
+    function createShadowInput(id: string): HTMLInputElement {
+        const host = document.createElement("div");
+        document.body.append(host);
+        const shadowRoot = host.attachShadow({ mode: "open" });
+        const input = document.createElement("input");
+        input.id = id;
+        shadowRoot.append(input);
+        return input;
+    }
+
+    it("should not leak validation state between elements that share an id", () => {
+        expect.assertions(3);
+        const inputA = createShadowInput("shared-id");
+        const inputB = createShadowInput("shared-id");
+
+        ValidationService.setTouched(inputA);
+        ValidationService.setError(inputB, "error on B only");
+
+        /* eslint-disable-next-line @typescript-eslint/no-explicit-any --
+         * technical debt, should not access private variables */
+        const states = (ValidationService as any).validationStates as Map<
+            Element,
+            ValidationState
+        >;
+        expect(states.get(inputA)).toEqual({ touched: true });
+        expect(states.get(inputB)).toEqual({ serverError: "error on B only" });
+        expect(states.get(inputA)).not.toEqual(states.get(inputB));
+    });
+
+    it("should validate an element inside a shadow root when given the element directly", async () => {
+        expect.assertions(1);
+        const input = createShadowInput("shadow-only-input");
+        ValidationService.addValidatorsToElement(input, {
+            required: {},
+        });
+
+        const result = await ValidationService.validateElement(input);
+
+        expect(result.isValid).toBe(false);
+    });
+
+    it("should not reach into a shadow root when looking up an element by id string", async () => {
+        expect.assertions(1);
+        createShadowInput("shadow-only-input-2");
+
+        await expect(
+            ValidationService.validateElement("shadow-only-input-2"),
+        ).rejects.toThrow(
+            'Element with id "shadow-only-input-2" not found when calling validateElement(..)',
+        );
+    });
 });

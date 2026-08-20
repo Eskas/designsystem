@@ -5,6 +5,14 @@ class ElementIdServiceImpl implements ElementIdServiceInterface {
 
     public generateElementId(prefix = "fkui"): string {
         const id = this.nextId(prefix);
+        /* Deliberately only checks `document` here, never reaches into a
+         * shadow root (our own or - especially - anyone else's). Two
+         * separate web components (e.g. different major versions of this
+         * library) may in theory end up generating the same id for an
+         * element inside their own respective shadow roots; that is
+         * harmless since nothing in this library ever looks up an element
+         * by id across a shadow boundary, so such a collision can never
+         * cause one component to affect another. */
         if (document.querySelector(`#${id}`) === null) {
             return id;
         }
